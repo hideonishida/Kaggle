@@ -1,0 +1,144 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  width: 320px;
+  padding: 16px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 14px;
+  color: #333;
+  background: #fafafa;
+}
+
+h1 {
+  font-size: 16px;
+  text-align: center;
+  margin-bottom: 12px;
+  color: #1a1a2e;
+}
+
+.status-bar {
+  background: #e8f5e9;
+  color: #2e7d32;
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  margin-bottom: 12px;
+  text-align: center;
+}
+
+.status-bar.error {
+  background: #fce4ec;
+  color: #c62828;
+}
+
+.field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.field label {
+  font-size: 13px;
+  font-weight: 500;
+  color: #555;
+}
+
+.field input,
+.field select {
+  width: 120px;
+  padding: 5px 8px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font-size: 13px;
+  background: #fff;
+}
+
+.field input:focus,
+.field select:focus {
+  outline: none;
+  border-color: #2980b9;
+  box-shadow: 0 0 0 2px rgba(41, 128, 185, 0.15);
+}
+
+.progress-section {
+  margin: 12px 0;
+}
+
+.progress-bar-container {
+  width: 100%;
+  height: 8px;
+  background: #e0e0e0;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.progress-bar {
+  height: 100%;
+  width: 0%;
+  background: #2980b9;
+  border-radius: 4px;
+  transition: width 0.3s ease;
+}
+
+#progressText {
+  font-size: 12px;
+  color: #777;
+  text-align: center;
+  margin-top: 6px;
+}
+
+.button-group {
+  display: flex;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.btn {
+  flex: 1;
+  padding: 8px 0;
+  border: none;
+  border-radius: 4px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.btn-primary {
+  background: #2980b9;
+  color: #fff;
+}
+
+.btn-primary:hover {
+  background: #2471a3;
+}
+
+.btn-primary:disabled {
+  background: #aaa;
+  cursor: not-allowed;
+}
+
+.btn-danger {
+  background: #e74c3c;
+  color: #fff;
+}
+
+.btn-danger:hover {
+  background: #c0392b;
+}
+
+.error-text {
+  font-size: 12px;
+  color: #c62828;
+  margin-top: 8px;
+  text-align: center;
+}
+
+.hidden {
+  display: none;
+}

@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <h1>Kindle Screenshot</h1>
+
+  <div id="status-bar" class="status-bar hidden">
+    <span id="status-text"></span>
+  </div>
+
+  <div id="settings-panel">
+    <div class="field">
+      <label for="startPage">開始ページ</label>
+      <input type="number" id="startPage" value="1" min="1">
+    </div>
+    <div class="field">
+      <label for="endPage">終了ページ</label>
+      <input type="number" id="endPage" value="10" min="1">
+    </div>
+    <div class="field">
+      <label for="zoomLevel">高画質倍率</label>
+      <select id="zoomLevel">
+        <option value="1.5">1.5x</option>
+        <option value="2.0" selected>2.0x</option>
+        <option value="2.5">2.5x</option>
+        <option value="3.0">3.0x</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="delay">撮影間隔 (ms)</label>
+      <input type="number" id="delay" value="2000" min="500" step="100">
+    </div>
+  </div>
+
+  <div class="progress-section hidden" id="progressSection">
+    <div class="progress-bar-container">
+      <div class="progress-bar" id="progressBar"></div>
+    </div>
+    <p id="progressText">0 / 0 ページ撮影完了</p>
+  </div>
+
+  <div class="button-group">
+    <button id="startBtn" class="btn btn-primary">撮影開始</button>
+    <button id="stopBtn" class="btn btn-danger hidden">停止</button>
+  </div>
+
+  <p id="errorText" class="error-text hidden"></p>
+
+  <script src="popup.js"></script>
+</body>
+</html>
