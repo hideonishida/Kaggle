@@ -3,6 +3,7 @@
 const $ = (id) => document.getElementById(id);
 
 const els = {
+  pageDirection: $('pageDirection'),
   startPage: $('startPage'),
   endPage: $('endPage'),
   zoomLevel: $('zoomLevel'),
@@ -44,6 +45,7 @@ function updateProgress(current, total) {
 function setRunningUI(running) {
   els.startBtn.classList.toggle('hidden', running);
   els.stopBtn.classList.toggle('hidden', !running);
+  els.pageDirection.disabled = running;
   els.startPage.disabled = running;
   els.endPage.disabled = running;
   els.zoomLevel.disabled = running;
@@ -84,6 +86,7 @@ chrome.runtime.onMessage.addListener((msg) => {
 els.startBtn.addEventListener('click', () => {
   clearError();
 
+  const pageDirection = els.pageDirection.value;
   const startPage = parseInt(els.startPage.value, 10);
   const endPage = parseInt(els.endPage.value, 10);
   const zoomLevel = parseFloat(els.zoomLevel.value);
@@ -108,6 +111,7 @@ els.startBtn.addEventListener('click', () => {
 
   chrome.runtime.sendMessage({
     action: 'startCapture',
+    pageDirection,
     startPage,
     endPage,
     zoomLevel,

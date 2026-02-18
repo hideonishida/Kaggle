@@ -11,6 +11,7 @@ const captureState = {
   startPage: 1,
   endPage: 10,
   totalPages: 0,
+  pageDirection: 'left', // 'left' = 左送り(漫画), 'right' = 右送り(小説)
   zoomLevel: 2.0,
   delay: 2000,
   images: [],
@@ -96,6 +97,7 @@ async function handleStartCapture(msg, sendResponse) {
     captureState.endPage = msg.endPage;
     captureState.totalPages = msg.endPage - msg.startPage + 1;
     captureState.currentPage = msg.startPage;
+    captureState.pageDirection = msg.pageDirection || 'left';
     captureState.zoomLevel = msg.zoomLevel;
     captureState.delay = msg.delay;
     captureState.images = [];
@@ -134,7 +136,12 @@ async function ensureContentScript(tabId) {
 }
 
 async function captureLoop() {
-  const { startPage, endPage, tabId, windowId, zoomLevel, delay } = captureState;
+  const { startPage, endPage, tabId, windowId, zoomLevel, delay, pageDirection } = captureState;
+
+  // Determine the arrow key direction based on user's selection
+  // 'left' = 左送り(漫画/右綴じ) → ArrowLeft is "next page"
+  // 'right' = 右送り(小説/左綴じ) → ArrowRight is "next page"
+  const nextDirection = pageDirection === 'left' ? 'prev' : 'next';
 
   // Navigate to start page: if startPage > 1, turn pages to reach it
   // (The user should already be near the desired page, but we skip ahead if needed)
@@ -142,7 +149,7 @@ async function captureLoop() {
     broadcastProgress(0, captureState.totalPages);
     for (let i = 1; i < startPage; i++) {
       if (!captureState.isRunning) break;
-      await turnPage(tabId, 'next', delay);
+      await turnPage(tabId, nextDirection, delay);
     }
   }
 
@@ -162,7 +169,7 @@ async function captureLoop() {
 
     // If not the very first page, turn to next page
     if (page > startPage) {
-      await turnPage(tabId, 'next', delay);
+      await turnPage(tabId, nextDirection, delay);
     } else {
       // Wait for current page to be stable
       await sleep(Math.min(delay, 1000));
