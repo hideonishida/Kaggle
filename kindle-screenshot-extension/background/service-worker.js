@@ -12,6 +12,8 @@ const captureState = {
   endPage: 10,
   totalPages: 0,
   pageDirection: 'left', // 'left' = 左送り(漫画), 'right' = 右送り(小説)
+  cropWidth: 0,   // 0 = no crop
+  cropHeight: 0,  // 0 = no crop
   zoomLevel: 2.0,
   delay: 2000,
   images: [],
@@ -98,6 +100,8 @@ async function handleStartCapture(msg, sendResponse) {
     captureState.totalPages = msg.endPage - msg.startPage + 1;
     captureState.currentPage = msg.startPage;
     captureState.pageDirection = msg.pageDirection || 'left';
+    captureState.cropWidth = msg.cropWidth || 0;
+    captureState.cropHeight = msg.cropHeight || 0;
     captureState.zoomLevel = msg.zoomLevel;
     captureState.delay = msg.delay;
     captureState.images = [];
@@ -291,11 +295,17 @@ async function generatePdf() {
     const BATCH_SIZE = 20;
     const images = captureState.images;
 
+    const cropOpts = {
+      cropWidth: captureState.cropWidth,
+      cropHeight: captureState.cropHeight,
+    };
+
     if (images.length <= BATCH_SIZE) {
       chrome.runtime.sendMessage({
         action: 'generatePdf',
         target: 'offscreen',
         images,
+        ...cropOpts,
       });
     } else {
       // Send init message
@@ -304,6 +314,7 @@ async function generatePdf() {
         target: 'offscreen',
         totalBatches: Math.ceil(images.length / BATCH_SIZE),
         totalImages: images.length,
+        ...cropOpts,
       });
       // Send batches
       for (let i = 0; i < images.length; i += BATCH_SIZE) {

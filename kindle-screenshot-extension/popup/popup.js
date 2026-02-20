@@ -6,6 +6,8 @@ const els = {
   pageDirection: $('pageDirection'),
   startPage: $('startPage'),
   endPage: $('endPage'),
+  cropWidth: $('cropWidth'),
+  cropHeight: $('cropHeight'),
   zoomLevel: $('zoomLevel'),
   delay: $('delay'),
   startBtn: $('startBtn'),
@@ -48,6 +50,8 @@ function setRunningUI(running) {
   els.pageDirection.disabled = running;
   els.startPage.disabled = running;
   els.endPage.disabled = running;
+  els.cropWidth.disabled = running;
+  els.cropHeight.disabled = running;
   els.zoomLevel.disabled = running;
   els.delay.disabled = running;
 }
@@ -89,6 +93,8 @@ els.startBtn.addEventListener('click', () => {
   const pageDirection = els.pageDirection.value;
   const startPage = parseInt(els.startPage.value, 10);
   const endPage = parseInt(els.endPage.value, 10);
+  const cropWidth = parseInt(els.cropWidth.value, 10) || 0;
+  const cropHeight = parseInt(els.cropHeight.value, 10) || 0;
   const zoomLevel = parseFloat(els.zoomLevel.value);
   const delay = parseInt(els.delay.value, 10);
 
@@ -114,6 +120,8 @@ els.startBtn.addEventListener('click', () => {
     pageDirection,
     startPage,
     endPage,
+    cropWidth,
+    cropHeight,
     zoomLevel,
     delay,
   }, (res) => {

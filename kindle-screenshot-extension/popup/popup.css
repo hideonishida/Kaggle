@@ -58,6 +58,48 @@ h1 {
   background: #fff;
 }
 
+.field-group-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: #555;
+  margin-bottom: 6px;
+}
+
+.field-row {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.field-inline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+}
+
+.field-inline label {
+  font-size: 13px;
+  font-weight: 500;
+  color: #555;
+  white-space: nowrap;
+}
+
+.field-inline input {
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font-size: 13px;
+  background: #fff;
+}
+
+.field-inline input:focus {
+  outline: none;
+  border-color: #2980b9;
+  box-shadow: 0 0 0 2px rgba(41, 128, 185, 0.15);
+}
+
 .field input:focus,
 .field select:focus {
   outline: none;

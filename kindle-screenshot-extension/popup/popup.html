@@ -27,6 +27,17 @@
       <label for="endPage">終了ページ</label>
       <input type="number" id="endPage" value="10" min="1">
     </div>
+    <div class="field-group-label">トリミング (px, 0=トリミングなし)</div>
+    <div class="field-row">
+      <div class="field-inline">
+        <label for="cropWidth">横</label>
+        <input type="number" id="cropWidth" value="0" min="0" step="1">
+      </div>
+      <div class="field-inline">
+        <label for="cropHeight">縦</label>
+        <input type="number" id="cropHeight" value="0" min="0" step="1">
+      </div>
+    </div>
     <div class="field">
       <label for="zoomLevel">高画質倍率</label>
       <select id="zoomLevel">
