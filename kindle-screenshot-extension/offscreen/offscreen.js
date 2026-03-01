@@ -10,6 +10,7 @@ let batchedImages = [];
 let totalBatches = 0;
 let receivedBatches = 0;
 let cropSettings = { cropWidth: 0, cropHeight: 0 };
+let sizeSettings = { outputWidth: 0, outputHeight: 0 };
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.target !== 'offscreen') return;
@@ -17,6 +18,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   switch (msg.action) {
     case 'generatePdf':
       cropSettings = { cropWidth: msg.cropWidth || 0, cropHeight: msg.cropHeight || 0 };
+      sizeSettings = { outputWidth: msg.outputWidth || 0, outputHeight: msg.outputHeight || 0 };
       buildPdf(msg.images);
       sendResponse({ ok: true });
       break;
@@ -26,6 +28,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       totalBatches = msg.totalBatches;
       receivedBatches = 0;
       cropSettings = { cropWidth: msg.cropWidth || 0, cropHeight: msg.cropHeight || 0 };
+      sizeSettings = { outputWidth: msg.outputWidth || 0, outputHeight: msg.outputHeight || 0 };
       sendResponse({ ok: true });
       break;
 
@@ -85,9 +88,69 @@ function cropImage(img, targetWidth, targetHeight) {
 }
 
 /**
+ * Resize an image to fit within target dimensions, maintaining aspect ratio.
+ * Returns a PNG data URL of the resized image.
+ * If target dimensions are 0, returns the original.
+ */
+function resizeImage(img, targetWidth, targetHeight) {
+  const srcW = img.naturalWidth || img.width;
+  const srcH = img.naturalHeight || img.height;
+
+  if (!targetWidth && !targetHeight) {
+    return { dataUrl: img.src, width: srcW, height: srcH };
+  }
+
+  // Calculate scale to fit within target dimensions while maintaining aspect ratio
+  let scale = 1;
+  if (targetWidth && targetHeight) {
+    scale = Math.min(targetWidth / srcW, targetHeight / srcH);
+  } else if (targetWidth) {
+    scale = targetWidth / srcW;
+  } else {
+    scale = targetHeight / srcH;
+  }
+
+  // Don't upscale
+  if (scale >= 1) {
+    return { dataUrl: img.src, width: srcW, height: srcH };
+  }
+
+  const newW = Math.round(srcW * scale);
+  const newH = Math.round(srcH * scale);
+
+  const canvas = document.createElement('canvas');
+  canvas.width = newW;
+  canvas.height = newH;
+  const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(img, 0, 0, newW, newH);
+
+  return { dataUrl: canvas.toDataURL('image/png'), width: newW, height: newH };
+}
+
+/**
+ * Apply crop then resize to an image, returning the processed result.
+ */
+async function processImage(img, dataUrl, needsCrop, cropW, cropH, needsResize, outW, outH) {
+  let result = needsCrop
+    ? cropImage(img, cropW, cropH)
+    : { dataUrl, width: img.naturalWidth, height: img.naturalHeight };
+
+  if (needsResize) {
+    // Load the cropped image so canvas drawImage works correctly
+    const tempImg = await loadImage(result.dataUrl);
+    result = resizeImage(tempImg, outW, outH);
+  }
+
+  return result;
+}
+
+/**
  * Build a PDF from an array of image data URLs.
  * Each image becomes one page, sized to match the image aspect ratio.
  * If cropSettings are provided, images are center-cropped first.
+ * If sizeSettings are provided, images are resized to fit the target.
  */
 async function buildPdf(images) {
   try {
@@ -100,13 +163,13 @@ async function buildPdf(images) {
     }
 
     const { cropWidth, cropHeight } = cropSettings;
+    const { outputWidth, outputHeight } = sizeSettings;
     const needsCrop = cropWidth > 0 || cropHeight > 0;
+    const needsResize = outputWidth > 0 || outputHeight > 0;
 
-    // Load the first image and optionally crop to determine page dimensions
+    // Load the first image and process to determine page dimensions
     const firstImg = await loadImage(images[0]);
-    const first = needsCrop
-      ? cropImage(firstImg, cropWidth, cropHeight)
-      : { dataUrl: images[0], width: firstImg.naturalWidth, height: firstImg.naturalHeight };
+    const first = await processImage(firstImg, images[0], needsCrop, cropWidth, cropHeight, needsResize, outputWidth, outputHeight);
 
     // Use pixel dimensions converted to mm (72 DPI as base)
     // jsPDF uses mm by default; we set custom page size based on image aspect ratio
@@ -127,19 +190,17 @@ async function buildPdf(images) {
 
     for (let i = 0; i < images.length; i++) {
       const img = await loadImage(images[i]);
-      const cropped = needsCrop
-        ? cropImage(img, cropWidth, cropHeight)
-        : { dataUrl: images[i], width: img.naturalWidth, height: img.naturalHeight };
+      const processed = await processImage(img, images[i], needsCrop, cropWidth, cropHeight, needsResize, outputWidth, outputHeight);
 
-      const w = cropped.width * pxToMm;
-      const h = cropped.height * pxToMm;
+      const w = processed.width * pxToMm;
+      const h = processed.height * pxToMm;
 
       if (i > 0) {
-        const orient = cropped.width > cropped.height ? 'l' : 'p';
+        const orient = processed.width > processed.height ? 'l' : 'p';
         pdf.addPage([w, h], orient);
       }
 
-      pdf.addImage(cropped.dataUrl, 'PNG', 0, 0, w, h);
+      pdf.addImage(processed.dataUrl, 'PNG', 0, 0, w, h);
     }
 
     // Generate blob URL

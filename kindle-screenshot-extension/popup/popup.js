@@ -8,6 +8,10 @@ const els = {
   endPage: $('endPage'),
   cropWidth: $('cropWidth'),
   cropHeight: $('cropHeight'),
+  outputSize: $('outputSize'),
+  outputWidth: $('outputWidth'),
+  outputHeight: $('outputHeight'),
+  customSizeRow: $('customSizeRow'),
   zoomLevel: $('zoomLevel'),
   delay: $('delay'),
   startBtn: $('startBtn'),
@@ -20,6 +24,12 @@ const els = {
   settingsPanel: $('settings-panel'),
   errorText: $('errorText'),
 };
+
+// Show/hide custom size inputs
+els.outputSize.addEventListener('change', () => {
+  const isCustom = els.outputSize.value === 'custom';
+  els.customSizeRow.classList.toggle('hidden', !isCustom);
+});
 
 function showError(msg) {
   els.errorText.textContent = msg;
@@ -52,6 +62,9 @@ function setRunningUI(running) {
   els.endPage.disabled = running;
   els.cropWidth.disabled = running;
   els.cropHeight.disabled = running;
+  els.outputSize.disabled = running;
+  els.outputWidth.disabled = running;
+  els.outputHeight.disabled = running;
   els.zoomLevel.disabled = running;
   els.delay.disabled = running;
 }
@@ -87,6 +100,19 @@ chrome.runtime.onMessage.addListener((msg) => {
   }
 });
 
+function parseOutputSize() {
+  const sizeValue = els.outputSize.value;
+  if (sizeValue === 'original') return { outputWidth: 0, outputHeight: 0 };
+  if (sizeValue === 'custom') {
+    return {
+      outputWidth: parseInt(els.outputWidth.value, 10) || 0,
+      outputHeight: parseInt(els.outputHeight.value, 10) || 0,
+    };
+  }
+  const [w, h] = sizeValue.split('x').map(Number);
+  return { outputWidth: w, outputHeight: h };
+}
+
 els.startBtn.addEventListener('click', () => {
   clearError();
 
@@ -95,6 +121,7 @@ els.startBtn.addEventListener('click', () => {
   const endPage = parseInt(els.endPage.value, 10);
   const cropWidth = parseInt(els.cropWidth.value, 10) || 0;
   const cropHeight = parseInt(els.cropHeight.value, 10) || 0;
+  const { outputWidth, outputHeight } = parseOutputSize();
   const zoomLevel = parseFloat(els.zoomLevel.value);
   const delay = parseInt(els.delay.value, 10);
 
@@ -122,6 +149,8 @@ els.startBtn.addEventListener('click', () => {
     endPage,
     cropWidth,
     cropHeight,
+    outputWidth,
+    outputHeight,
     zoomLevel,
     delay,
   }, (res) => {

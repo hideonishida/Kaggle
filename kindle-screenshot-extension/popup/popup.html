@@ -39,6 +39,27 @@
       </div>
     </div>
     <div class="field">
+      <label for="outputSize">出力サイズ</label>
+      <select id="outputSize">
+        <option value="original">そのまま</option>
+        <option value="1200x1600">1200×1600 (iPad)</option>
+        <option value="1536x2048" selected>1536×2048 (Retina)</option>
+        <option value="1080x1440">1080×1440</option>
+        <option value="768x1024">768×1024 (小)</option>
+        <option value="custom">カスタム</option>
+      </select>
+    </div>
+    <div class="field-row hidden" id="customSizeRow">
+      <div class="field-inline">
+        <label for="outputWidth">幅</label>
+        <input type="number" id="outputWidth" value="1536" min="100" step="1">
+      </div>
+      <div class="field-inline">
+        <label for="outputHeight">高さ</label>
+        <input type="number" id="outputHeight" value="2048" min="100" step="1">
+      </div>
+    </div>
+    <div class="field">
       <label for="zoomLevel">高画質倍率</label>
       <select id="zoomLevel">
         <option value="1.5">1.5x</option>

@@ -14,6 +14,8 @@ const captureState = {
   pageDirection: 'left', // 'left' = 左送り(漫画), 'right' = 右送り(小説)
   cropWidth: 0,   // 0 = no crop
   cropHeight: 0,  // 0 = no crop
+  outputWidth: 0,   // 0 = original size
+  outputHeight: 0,  // 0 = original size
   zoomLevel: 2.0,
   delay: 2000,
   images: [],
@@ -102,6 +104,8 @@ async function handleStartCapture(msg, sendResponse) {
     captureState.pageDirection = msg.pageDirection || 'left';
     captureState.cropWidth = msg.cropWidth || 0;
     captureState.cropHeight = msg.cropHeight || 0;
+    captureState.outputWidth = msg.outputWidth || 0;
+    captureState.outputHeight = msg.outputHeight || 0;
     captureState.zoomLevel = msg.zoomLevel;
     captureState.delay = msg.delay;
     captureState.images = [];
@@ -181,8 +185,11 @@ async function captureLoop() {
 
     if (!captureState.isRunning) break;
 
-    // Capture with zoom
-    const dataUrl = await captureWithZoom(tabId, windowId, zoomLevel);
+    // Check content is ready before capturing (blank page prevention)
+    await waitForContentReady(tabId, delay);
+
+    // Capture with zoom, retry if blank
+    const dataUrl = await captureWithRetry(tabId, windowId, zoomLevel, delay);
     if (dataUrl) {
       captureState.images.push(dataUrl);
     }
@@ -295,9 +302,11 @@ async function generatePdf() {
     const BATCH_SIZE = 20;
     const images = captureState.images;
 
-    const cropOpts = {
+    const pdfOpts = {
       cropWidth: captureState.cropWidth,
       cropHeight: captureState.cropHeight,
+      outputWidth: captureState.outputWidth,
+      outputHeight: captureState.outputHeight,
     };
 
     if (images.length <= BATCH_SIZE) {
@@ -305,7 +314,7 @@ async function generatePdf() {
         action: 'generatePdf',
         target: 'offscreen',
         images,
-        ...cropOpts,
+        ...pdfOpts,
       });
     } else {
       // Send init message
@@ -314,7 +323,7 @@ async function generatePdf() {
         target: 'offscreen',
         totalBatches: Math.ceil(images.length / BATCH_SIZE),
         totalImages: images.length,
-        ...cropOpts,
+        ...pdfOpts,
       });
       // Send batches
       for (let i = 0; i < images.length; i += BATCH_SIZE) {
@@ -373,6 +382,68 @@ async function handlePdfReady(msg) {
   } catch (err) {
     broadcast({ action: 'captureError', error: 'ダウンロードに失敗しました: ' + err.message });
   }
+}
+
+// ============================================================
+// Blank page detection & retry
+// ============================================================
+
+/**
+ * Ask the content script whether the page content appears to be rendered.
+ * Returns true if content is visible, false if it seems blank/loading.
+ */
+async function waitForContentReady(tabId, delay) {
+  const MAX_CHECKS = 5;
+  const CHECK_INTERVAL = 600;
+
+  for (let i = 0; i < MAX_CHECKS; i++) {
+    try {
+      const response = await chrome.tabs.sendMessage(tabId, {
+        action: 'isContentReady',
+      });
+      if (response && response.ready) return;
+    } catch {
+      // Content script may not support the message yet; skip
+      return;
+    }
+    await sleep(CHECK_INTERVAL);
+  }
+  // Even if not confirmed ready, proceed (fallback)
+}
+
+/**
+ * Capture with zoom, then verify the capture isn't blank.
+ * Retries up to 3 times with increasing wait if blank is detected.
+ */
+async function captureWithRetry(tabId, windowId, zoomLevel, delay) {
+  const MAX_RETRIES = 3;
+  const RETRY_WAIT = 1500;
+
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    const dataUrl = await captureWithZoom(tabId, windowId, zoomLevel);
+    if (!dataUrl) return null;
+
+    // Check if the captured image is blank by examining data URL size.
+    // A completely blank/white PNG at typical screen resolution compresses
+    // to a very small size. Real content is significantly larger.
+    // Threshold: a blank 1920x1080 PNG is ~5-15KB, real content is 100KB+
+    const sizeKB = (dataUrl.length * 3) / 4 / 1024; // approximate decoded size
+    if (sizeKB > 30) {
+      // Looks like real content
+      return dataUrl;
+    }
+
+    // Possibly blank, wait and retry
+    console.warn(`Capture attempt ${attempt + 1}: image seems blank (${Math.round(sizeKB)}KB), retrying...`);
+    await sleep(RETRY_WAIT * (attempt + 1));
+
+    // Ask content script to re-check readiness
+    await waitForContentReady(tabId, delay);
+  }
+
+  // After all retries, return whatever we captured
+  const dataUrl = await captureWithZoom(tabId, windowId, zoomLevel);
+  return dataUrl;
 }
 
 // ============================================================
