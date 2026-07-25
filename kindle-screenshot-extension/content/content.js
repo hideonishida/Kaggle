@@ -1,12 +1,20 @@
 'use strict';
 
 // Kindle Cloud Reader content script
-// Handles page navigation and load detection within the reader page.
+// Handles page navigation and render-completion detection within the reader.
+//
+// Kindle renders pages into <canvas>, so DOM mutation events are useless for
+// detecting page turns. Instead we compute a small pixel-hash "signature" of
+// the visible canvases and wait until it changes and stabilizes.
 
 (() => {
   // Avoid double injection
   if (window.__kindleScreenshotInjected) return;
   window.__kindleScreenshotInjected = true;
+
+  function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
 
   /**
    * Simulate a keyboard event on the document.
@@ -57,68 +65,85 @@
   }
 
   /**
-   * Wait for page content to stabilize after a page turn.
-   * Uses multiple heuristics:
-   * 1. MutationObserver to detect DOM changes settling
-   * 2. Image/canvas load completion check
-   * 3. Network idle detection via PerformanceObserver
-   * 4. Fixed delay fallback
+   * Compute a cheap signature of the currently rendered content.
+   * Samples pixels from visible canvases (downscaled to 16x16) plus image
+   * sources. Two different rendered pages produce different signatures;
+   * the same page produces the same signature.
    */
-  function waitForPageLoad(timeoutMs) {
-    return new Promise((resolve) => {
-      let settled = false;
-      let mutationTimer = null;
-      const startTime = Date.now();
+  function getContentSignature() {
+    let hash = 5381;
+    const mix = (n) => { hash = (((hash << 5) + hash) + (n | 0)) >>> 0; };
+    let sampled = false;
 
-      // Hard timeout fallback
-      const hardTimeout = setTimeout(() => {
-        cleanup();
-        resolve();
-      }, timeoutMs);
-
-      function cleanup() {
-        if (settled) return;
-        settled = true;
-        clearTimeout(hardTimeout);
-        if (mutationTimer) clearTimeout(mutationTimer);
-        if (observer) observer.disconnect();
+    const canvases = document.querySelectorAll('canvas');
+    for (const canvas of canvases) {
+      if (canvas.offsetParent === null) continue;
+      if (canvas.width === 0 || canvas.height === 0) continue;
+      mix(canvas.width);
+      mix(canvas.height);
+      try {
+        const S = 16;
+        const small = document.createElement('canvas');
+        small.width = S;
+        small.height = S;
+        const sctx = small.getContext('2d', { willReadFrequently: true });
+        sctx.drawImage(canvas, 0, 0, S, S);
+        const data = sctx.getImageData(0, 0, S, S).data;
+        for (let i = 0; i < data.length; i += 8) mix(data[i]);
+        sampled = true;
+      } catch {
+        // Tainted canvas; fall through to other sources
       }
+    }
 
-      // Watch for DOM mutations to settle (no changes for 400ms)
-      const observer = new MutationObserver(() => {
-        if (mutationTimer) clearTimeout(mutationTimer);
-        mutationTimer = setTimeout(() => {
-          // Also check images/canvases are loaded
-          if (areImagesLoaded()) {
-            cleanup();
-            resolve();
-          }
-        }, 400);
-      });
+    const imgs = document.querySelectorAll('img');
+    mix(imgs.length);
+    for (const img of imgs) {
+      if (img.offsetParent === null) continue;
+      const src = img.currentSrc || img.src || '';
+      for (let i = 0; i < src.length && i < 300; i += 7) mix(src.charCodeAt(i));
+      mix(img.naturalWidth);
+      mix(img.naturalHeight);
+      sampled = true;
+    }
 
-      observer.observe(document.body, {
-        childList: true,
-        subtree: true,
-        attributes: true,
-        characterData: true,
-      });
+    if (!sampled && document.body) {
+      const text = document.body.innerText || '';
+      mix(text.length);
+      for (let i = 0; i < text.length && i < 500; i += 11) mix(text.charCodeAt(i));
+    }
 
-      // Initial check after a small delay (page turn animation)
-      setTimeout(() => {
-        if (!settled && areImagesLoaded()) {
-          // Give a bit more time for any late mutations
-          if (mutationTimer) clearTimeout(mutationTimer);
-          mutationTimer = setTimeout(() => {
-            cleanup();
-            resolve();
-          }, 300);
-        }
-      }, 500);
-    });
+    return hash.toString(36);
   }
 
   /**
-   * Check if all visible images and canvases appear to be loaded.
+   * After triggering a page turn, wait until the content signature differs
+   * from `prevSig` and then stays identical across two consecutive samples
+   * (i.e. the new page has finished rendering). Resolves early as soon as
+   * the page is stable — no fixed delay wasted on fast machines.
+   */
+  async function waitForPageChange(prevSig, timeoutMs) {
+    const POLL_MS = 250;
+    const deadline = Date.now() + timeoutMs;
+    let lastSig = null;
+    let changed = false;
+
+    while (Date.now() < deadline) {
+      await sleep(POLL_MS);
+      const sig = getContentSignature();
+      if (sig !== prevSig) {
+        changed = true;
+        if (sig === lastSig && isContentRendered()) {
+          return { changed: true, stable: true };
+        }
+      }
+      lastSig = sig;
+    }
+    return { changed, stable: false };
+  }
+
+  /**
+   * Check if all visible images appear to be loaded.
    */
   function areImagesLoaded() {
     const images = document.querySelectorAll('img');
@@ -132,7 +157,7 @@
 
   /**
    * Check if the Kindle reader content appears to be actually rendered
-   * (not a blank/loading state). Examines canvas elements and key DOM nodes.
+   * (not a blank/loading state). Examines canvas pixels and loading overlays.
    */
   function isContentRendered() {
     // Check canvas elements - Kindle uses canvas for page rendering
@@ -146,7 +171,6 @@
         if (!ctx) continue;
         const w = canvas.width;
         const h = canvas.height;
-        // Sample center and corners
         const points = [
           [Math.floor(w / 2), Math.floor(h / 2)],
           [Math.floor(w / 4), Math.floor(h / 4)],
@@ -155,8 +179,7 @@
         let hasContent = false;
         for (const [x, y] of points) {
           const pixel = ctx.getImageData(x, y, 1, 1).data;
-          // If any sampled pixel is not pure white (255,255,255) or
-          // transparent (alpha=0), content is likely rendered
+          // Non-white, non-transparent pixel means content is rendered
           if (pixel[3] > 0 && (pixel[0] < 250 || pixel[1] < 250 || pixel[2] < 250)) {
             hasContent = true;
             break;
@@ -168,25 +191,10 @@
       }
     }
 
-    // Check for iframe-based rendering (some Kindle versions)
-    const iframes = document.querySelectorAll('iframe');
-    for (const iframe of iframes) {
-      if (iframe.offsetParent === null) continue;
-      try {
-        const doc = iframe.contentDocument;
-        if (doc && doc.body && doc.body.children.length === 0) {
-          return false;
-        }
-      } catch {
-        // Cross-origin iframe; skip
-      }
-    }
-
     // Check for loading spinners/overlays
     const loadingSelectors = [
       '[class*="loading"]',
       '[class*="spinner"]',
-      '[class*="progress"]',
       '[class*="overlay"]',
     ];
     for (const sel of loadingSelectors) {
@@ -194,7 +202,6 @@
       if (el && el.offsetParent !== null &&
           getComputedStyle(el).display !== 'none' &&
           getComputedStyle(el).visibility !== 'hidden') {
-        // Loading indicator is visible
         const text = el.textContent || '';
         if (text.includes('loading') || text.includes('読み込み') || el.children.length === 0) {
           return false;
@@ -209,7 +216,6 @@
    * Try to extract current page/location info from the reader UI.
    */
   function getPageInfo() {
-    // Try common footer/progress selectors
     const selectors = [
       '#kindleReader_footer',
       '[class*="progress"]',
@@ -227,41 +233,35 @@
 
   // Message listener for commands from service worker
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-    if (msg.action === 'turnPage') {
+    if (msg.action === 'turnPage' || msg.action === 'turnPageClick') {
       const direction = msg.direction || 'next';
-      const timeout = msg.timeout || 3000;
+      const timeout = msg.timeout || 5000;
+      const prevSig = getContentSignature();
 
-      // First try keyboard event
-      simulateKey(direction === 'next' ? 'ArrowRight' : 'ArrowLeft');
+      if (msg.action === 'turnPage') {
+        simulateKey(direction === 'next' ? 'ArrowRight' : 'ArrowLeft');
+      } else {
+        clickPageTurn(direction);
+      }
 
-      // Wait for page load
-      waitForPageLoad(timeout).then(() => {
-        sendResponse({ success: true, pageInfo: getPageInfo() });
+      waitForPageChange(prevSig, timeout).then((result) => {
+        sendResponse({ success: true, ...result, pageInfo: getPageInfo() });
       });
-
       return true; // Keep message channel open for async response
     }
 
-    if (msg.action === 'turnPageClick') {
-      const direction = msg.direction || 'next';
-      const timeout = msg.timeout || 3000;
-
-      clickPageTurn(direction);
-
-      waitForPageLoad(timeout).then(() => {
-        sendResponse({ success: true, pageInfo: getPageInfo() });
-      });
-
-      return true;
-    }
-
-    if (msg.action === 'getPageInfo') {
-      sendResponse({ pageInfo: getPageInfo() });
+    if (msg.action === 'getSignature') {
+      sendResponse({ signature: getContentSignature() });
       return false;
     }
 
     if (msg.action === 'isContentReady') {
       sendResponse({ ready: isContentRendered() });
+      return false;
+    }
+
+    if (msg.action === 'getPageInfo') {
+      sendResponse({ pageInfo: getPageInfo() });
       return false;
     }
 

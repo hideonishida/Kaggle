@@ -2,7 +2,17 @@
 
 // ============================================================
 // Kindle Cloud Reader Screenshot - Service Worker
-// Controls the capture loop: zoom → capture → restore → next
+//
+// Capture flow (v2):
+//   1. Zoom in ONCE at the start of the run
+//   2. For each page: turn page → wait until the rendered content
+//      actually changes and stabilizes (canvas signature) → capture
+//   3. Restore zoom once at the end
+//
+// The previous per-page zoom-in/zoom-out cycle forced two full
+// re-renders per capture, which was slow and produced blank shots
+// on slow machines. Waits are now adaptive: they end as soon as the
+// page is confirmed rendered, and `delay` acts as the upper limit.
 // ============================================================
 
 const captureState = {
@@ -17,7 +27,7 @@ const captureState = {
   outputWidth: 0,   // 0 = original size
   outputHeight: 0,  // 0 = original size
   zoomLevel: 2.0,
-  delay: 2000,
+  delay: 5000,    // max wait per page (ms)
   images: [],
   tabId: null,
   windowId: null,
@@ -124,7 +134,9 @@ async function handleStartCapture(msg, sendResponse) {
   } catch (err) {
     captureState.isRunning = false;
     stopKeepAlive();
-    sendResponse({ error: err.message });
+    // Best-effort zoom restore on unexpected failure
+    try { await chrome.tabs.setZoom(captureState.tabId, 1.0); } catch { /* ignore */ }
+    broadcast({ action: 'captureError', error: err.message });
   }
 }
 
@@ -151,113 +163,160 @@ async function captureLoop() {
   // 'right' = 右送り(小説/左綴じ) → ArrowRight is "next page"
   const nextDirection = pageDirection === 'left' ? 'prev' : 'next';
 
-  // Navigate to start page: if startPage > 1, turn pages to reach it
-  // (The user should already be near the desired page, but we skip ahead if needed)
-  if (startPage > 1) {
-    broadcastProgress(0, captureState.totalPages);
-    for (let i = 1; i < startPage; i++) {
-      if (!captureState.isRunning) break;
-      await turnPage(tabId, nextDirection, delay);
-    }
-  }
+  let stopped = false;
 
-  // Main capture loop
-  for (let page = startPage; page <= endPage; page++) {
-    if (!captureState.isRunning) {
-      broadcast({ action: 'captureStopped' });
-      stopKeepAlive();
-      // If we have images, still offer PDF
-      if (captureState.images.length > 0) {
-        await generatePdf();
+  try {
+    // Navigate to start page BEFORE zooming (page turns at 100% are faster)
+    if (startPage > 1) {
+      broadcastProgress(0, captureState.totalPages);
+      for (let i = 1; i < startPage; i++) {
+        if (!captureState.isRunning) break;
+        await turnPage(tabId, nextDirection, delay);
       }
-      return;
     }
 
-    captureState.currentPage = page;
-
-    // If not the very first page, turn to next page
-    if (page > startPage) {
-      await turnPage(tabId, nextDirection, delay);
-    } else {
-      // Wait for current page to be stable
-      await sleep(Math.min(delay, 1000));
+    if (captureState.isRunning) {
+      // Zoom in ONCE for the entire run. The high-res re-render happens a
+      // single time here instead of twice per page.
+      await chrome.tabs.setZoom(tabId, zoomLevel);
+      await waitForContentReady(tabId, Math.max(delay, 5000));
+      await sleep(500); // small settle margin after zoom re-render
     }
 
-    if (!captureState.isRunning) break;
+    let lastImage = null;
 
-    // Check content is ready before capturing (blank page prevention)
-    await waitForContentReady(tabId, delay);
+    // Main capture loop
+    for (let page = startPage; page <= endPage; page++) {
+      if (!captureState.isRunning) { stopped = true; break; }
 
-    // Capture with zoom, retry if blank
-    const dataUrl = await captureWithRetry(tabId, windowId, zoomLevel, delay);
-    if (dataUrl) {
-      captureState.images.push(dataUrl);
+      captureState.currentPage = page;
+
+      if (page > startPage) {
+        // Turn page and wait until the rendered content actually changed.
+        // The content script resolves early once the new page is stable.
+        const result = await turnPage(tabId, nextDirection, delay);
+        if (!result || !result.changed) {
+          // Keyboard turn didn't change the content — try click fallback
+          console.warn(`Page ${page}: keyboard turn had no effect, trying click`);
+          await turnPageClick(tabId, nextDirection, delay);
+        }
+      } else {
+        // First page: just make sure current content is rendered
+        await waitForContentReady(tabId, delay);
+      }
+
+      if (!captureState.isRunning) { stopped = true; break; }
+
+      // Capture, retrying if the shot is blank or identical to the
+      // previous page (i.e. rendering lagged behind)
+      const dataUrl = await captureStablePage(tabId, windowId, delay, lastImage);
+      if (dataUrl) {
+        captureState.images.push(dataUrl);
+        lastImage = dataUrl;
+      }
+
+      broadcastProgress(page - startPage + 1, captureState.totalPages);
     }
-
-    const captured = page - startPage + 1;
-    broadcastProgress(captured, captureState.totalPages);
+  } finally {
+    // Always restore zoom, even on stop/error
+    try {
+      await chrome.tabs.setZoom(tabId, 1.0);
+    } catch { /* tab may be gone */ }
   }
 
-  if (!captureState.isRunning && captureState.images.length === 0) {
-    stopKeepAlive();
-    return;
-  }
+  finishCapture(stopped);
+}
 
+// `stopped` = true when the user pressed 停止 mid-run.
+function finishCapture(stopped) {
   captureState.isRunning = false;
   stopKeepAlive();
 
-  broadcast({ action: 'captureComplete' });
+  if (stopped) {
+    broadcast({ action: 'captureStopped' });
+  } else {
+    broadcast({ action: 'captureComplete' });
+  }
 
-  // Generate PDF
-  await generatePdf();
+  if (captureState.images.length > 0) {
+    generatePdf();
+  }
 }
 
 // ============================================================
-// Capture with zoom
+// Capture with stability checks
 // ============================================================
 
-async function captureWithZoom(tabId, windowId, zoomLevel) {
-  const MAX_RETRIES = 3;
-
-  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-    try {
-      // Step 1: Zoom in
-      await chrome.tabs.setZoom(tabId, zoomLevel);
-      await sleep(400); // Wait for zoom to render
-
-      // Step 2: Capture
-      const dataUrl = await chrome.tabs.captureVisibleTab(windowId, {
-        format: 'png',
-      });
-
-      // Step 3: Restore zoom
-      await chrome.tabs.setZoom(tabId, 1.0);
-      await sleep(200);
-
-      return dataUrl;
-    } catch (err) {
-      console.warn(`Capture attempt ${attempt + 1} failed:`, err.message);
-      // Try to restore zoom even on error
-      try {
-        await chrome.tabs.setZoom(tabId, 1.0);
-      } catch { /* ignore */ }
-      await sleep(300);
-
-      if (attempt === MAX_RETRIES - 1) {
-        // Last attempt: try without zoom
-        try {
-          const dataUrl = await chrome.tabs.captureVisibleTab(windowId, {
-            format: 'png',
-          });
-          return dataUrl;
-        } catch (finalErr) {
-          console.error('All capture attempts failed:', finalErr.message);
-          return null;
-        }
-      }
-    }
+async function captureOnce(windowId) {
+  try {
+    return await chrome.tabs.captureVisibleTab(windowId, { format: 'png' });
+  } catch (err) {
+    console.warn('captureVisibleTab failed:', err.message);
+    return null;
   }
-  return null;
+}
+
+/**
+ * Capture the visible tab, verifying the result is neither blank nor
+ * identical to the previous page's capture. On a bad shot, waits for the
+ * content to finish rendering and retries with growing backoff.
+ */
+async function captureStablePage(tabId, windowId, maxWaitMs, lastImage) {
+  const MAX_ATTEMPTS = 4;
+  let dataUrl = null;
+
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    if (!captureState.isRunning) break;
+
+    dataUrl = await captureOnce(windowId);
+
+    if (dataUrl) {
+      // Blank check: a blank/white PNG compresses to a very small size
+      const sizeKB = (dataUrl.length * 3) / 4 / 1024;
+      const isBlank = sizeKB < 30;
+      // Duplicate check: identical to previous page = render hasn't caught up
+      const isDuplicate = lastImage !== null && dataUrl === lastImage;
+
+      if (!isBlank && !isDuplicate) {
+        return dataUrl;
+      }
+      console.warn(
+        `Capture attempt ${attempt + 1}: ` +
+        (isBlank ? `blank (${Math.round(sizeKB)}KB)` : 'identical to previous page') +
+        ', retrying...'
+      );
+    }
+
+    // Wait for rendering to catch up, then retry (500ms, 1s, 1.5s ...)
+    await sleep(500 * (attempt + 1));
+    await waitForContentReady(tabId, maxWaitMs);
+  }
+
+  // Return whatever we have rather than dropping the page silently
+  return dataUrl;
+}
+
+/**
+ * Poll the content script until the page reports itself rendered,
+ * up to maxWaitMs. Returns as soon as it's ready.
+ */
+async function waitForContentReady(tabId, maxWaitMs) {
+  const POLL_MS = 400;
+  const deadline = Date.now() + maxWaitMs;
+
+  while (Date.now() < deadline) {
+    try {
+      const response = await chrome.tabs.sendMessage(tabId, {
+        action: 'isContentReady',
+      });
+      if (response && response.ready) return true;
+    } catch {
+      // Content script unavailable; don't block the loop
+      return false;
+    }
+    await sleep(POLL_MS);
+  }
+  return false;
 }
 
 // ============================================================
@@ -266,25 +325,28 @@ async function captureWithZoom(tabId, windowId, zoomLevel) {
 
 async function turnPage(tabId, direction, waitMs) {
   try {
-    await chrome.tabs.sendMessage(tabId, {
+    return await chrome.tabs.sendMessage(tabId, {
       action: 'turnPage',
       direction,
       timeout: waitMs,
     });
-  } catch {
-    // Fallback: try click-based page turn
-    try {
-      await chrome.tabs.sendMessage(tabId, {
-        action: 'turnPageClick',
-        direction,
-        timeout: waitMs,
-      });
-    } catch (err) {
-      console.warn('Page turn failed:', err.message);
-    }
+  } catch (err) {
+    console.warn('Page turn (keyboard) failed:', err.message);
+    return null;
   }
-  // Additional stabilization wait
-  await sleep(300);
+}
+
+async function turnPageClick(tabId, direction, waitMs) {
+  try {
+    return await chrome.tabs.sendMessage(tabId, {
+      action: 'turnPageClick',
+      direction,
+      timeout: waitMs,
+    });
+  } catch (err) {
+    console.warn('Page turn (click) failed:', err.message);
+    return null;
+  }
 }
 
 // ============================================================
@@ -382,68 +444,6 @@ async function handlePdfReady(msg) {
   } catch (err) {
     broadcast({ action: 'captureError', error: 'ダウンロードに失敗しました: ' + err.message });
   }
-}
-
-// ============================================================
-// Blank page detection & retry
-// ============================================================
-
-/**
- * Ask the content script whether the page content appears to be rendered.
- * Returns true if content is visible, false if it seems blank/loading.
- */
-async function waitForContentReady(tabId, delay) {
-  const MAX_CHECKS = 5;
-  const CHECK_INTERVAL = 600;
-
-  for (let i = 0; i < MAX_CHECKS; i++) {
-    try {
-      const response = await chrome.tabs.sendMessage(tabId, {
-        action: 'isContentReady',
-      });
-      if (response && response.ready) return;
-    } catch {
-      // Content script may not support the message yet; skip
-      return;
-    }
-    await sleep(CHECK_INTERVAL);
-  }
-  // Even if not confirmed ready, proceed (fallback)
-}
-
-/**
- * Capture with zoom, then verify the capture isn't blank.
- * Retries up to 3 times with increasing wait if blank is detected.
- */
-async function captureWithRetry(tabId, windowId, zoomLevel, delay) {
-  const MAX_RETRIES = 3;
-  const RETRY_WAIT = 1500;
-
-  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-    const dataUrl = await captureWithZoom(tabId, windowId, zoomLevel);
-    if (!dataUrl) return null;
-
-    // Check if the captured image is blank by examining data URL size.
-    // A completely blank/white PNG at typical screen resolution compresses
-    // to a very small size. Real content is significantly larger.
-    // Threshold: a blank 1920x1080 PNG is ~5-15KB, real content is 100KB+
-    const sizeKB = (dataUrl.length * 3) / 4 / 1024; // approximate decoded size
-    if (sizeKB > 30) {
-      // Looks like real content
-      return dataUrl;
-    }
-
-    // Possibly blank, wait and retry
-    console.warn(`Capture attempt ${attempt + 1}: image seems blank (${Math.round(sizeKB)}KB), retrying...`);
-    await sleep(RETRY_WAIT * (attempt + 1));
-
-    // Ask content script to re-check readiness
-    await waitForContentReady(tabId, delay);
-  }
-
-  // After all retries, return whatever we captured
-  const dataUrl = await captureWithZoom(tabId, windowId, zoomLevel);
-  return dataUrl;
 }
 
 // ============================================================

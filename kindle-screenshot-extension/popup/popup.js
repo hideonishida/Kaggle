@@ -133,8 +133,8 @@ els.startBtn.addEventListener('click', () => {
     showError('開始ページは終了ページ以下にしてください');
     return;
   }
-  if (isNaN(delay) || delay < 500) {
-    showError('撮影間隔は500ms以上にしてください');
+  if (isNaN(delay) || delay < 1000) {
+    showError('ページ待機上限は1000ms以上にしてください');
     return;
   }
 
